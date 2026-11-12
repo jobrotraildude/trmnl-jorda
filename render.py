@@ -47,6 +47,7 @@ LAYOUTS = {
     'quadrant': (936, 702),
 }
 
+MIN_LABEL_MAG = 4.0                      # skjelv under dette får ingen etikett
 SS = 2                                   # supersampling for kart
 LON0, LAT0, LAT1 = -28.0, 82.0, -58.0    # Stillehavet i midten, venstre kant 28°V
 
@@ -264,7 +265,7 @@ def place_labels(d, ox, oy, mw, mh, cands, bg, avoid=()):
     """
     placed = list(avoid)
     points = [(c[0], c[1]) for c in cands]
-    for x, y, r, parts, _ in cands:
+    for x, y, r, parts, force in cands:
         widths = [tw(d, t, f) for t, f, _ in parts]
         gap = 7
         lw = sum(widths) + gap * (len(parts) - 1)
@@ -277,32 +278,48 @@ def place_labels(d, ox, oy, mw, mh, cands, bg, avoid=()):
             (x - lw - r * 0.5, y + r + 2),         # under, venstre
             (x + r * 0.5, y - r - lh - 2),         # over, høyre
             (x - lw - r * 0.5, y - r - lh - 2),    # over, venstre
+            (x + r + pad, y - lh * 1.4),           # høyre, litt opp
+            (x + r + pad, y + lh * 0.4),           # høyre, litt ned
+            (x - r - pad - lw, y - lh * 1.4),      # venstre, litt opp
+            (x - r - pad - lw, y + lh * 0.4),      # venstre, litt ned
+            (x - lw / 2, y + r + 2),               # rett under
+            (x - lw / 2, y - r - lh - 2),          # rett over
         ]
-        for lx, ly in options:
+        inside = [(lx, ly) for lx, ly in options
+                  if lx - 3 >= 4 and ly - 3 >= 4 and lx + lw + 3 <= mw - 4 and ly + lh + 3 <= mh - 4]
+        chosen = None
+        for lx, ly in inside:
             box = (lx - 3, ly - 3, lx + lw + 3, ly + lh + 3)
-            if box[0] < 4 or box[1] < 4 or box[2] > mw - 4 or box[3] > mh - 4:
-                continue
             if any(_hit(box, b) for b in placed):
                 continue
             if any(box[0] < px < box[2] and box[1] < py < box[3] for px, py in points):
                 continue
-            placed.append(box)
+            chosen = (lx, ly)
+            break
+        if chosen is None and force:
+            # må vises: velg plassen med minst overlapp
+            def cost(p):
+                b = (p[0] - 3, p[1] - 3, p[0] + lw + 3, p[1] + lh + 3)
+                return sum(_hit(b, o) for o in placed)
+            pool = inside or options
+            chosen = min(pool, key=cost) if pool else None
+        if chosen:
+            lx, ly = chosen
+            placed.append((lx - 3, ly - 3, lx + lw + 3, ly + lh + 3))
             cx = ox + lx
             for (t, f, col), wdt in zip(parts, widths):
                 d.text((cx, oy + ly + lh), t, font=f, fill=col, anchor='ls', stroke_width=4, stroke_fill=bg)
                 cx += wdt + gap
-            break
 
 
 def quake_labels(d, ox, oy, m, marks, qs, size, fg=0, sub=None):
     sub = gray(11) if sub is None else sub
-    near = min(qs, key=lambda q: km(HOME_LAT, HOME_LON, q['lat'], q['lon'])) if qs else None
-    order = sorted(marks, key=lambda t: (t[3] is not near, -t[3]['mag']))
+    order = sorted((t for t in marks if t[3]['mag'] >= MIN_LABEL_MAG), key=lambda t: -t[3]['mag'])
     cands = []
     for i, (x, y, r, q) in enumerate(order):
         big = q['mag'] >= 5.5
         cands.append((x, y, r, [(comma(q['mag']), font('sans', size + (4 if big else 0), 700), fg),
-                                (short_place(q['place']), font('sans', size - 2 + (4 if big else 0), 400), sub)], None))
+                                (short_place(q['place']), font('sans', size - 2 + (4 if big else 0), 400), sub)], True))
     place_labels(d, ox, oy, m.width, m.height, cands, 255)
 
 
@@ -559,7 +576,8 @@ def render_volcanoes(vs, week_date, layout):
     def map_at(width, x, y, label_size, max_ongoing=99):
         m, marks = volcano_map(vs, width, BG)
         img.paste(m, (x, y))
-        volcano_labels(d, x, y, m, marks, label_size, BG, FG, SUB, max_ongoing)
+        if layout == 'full':   # navn på kartet bare i fullskjerm
+            volcano_labels(d, x, y, m, marks, label_size, BG, FG, SUB, max_ongoing)
         return m
 
     def name_row(x, y, v, max_w, name_size=46, cty_size=30):
